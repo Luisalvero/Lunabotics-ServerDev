@@ -256,11 +256,4 @@ All tests passed!
 
 ---
 
-## Next Steps
-
-- Integrate telemetry feedback channels (sensor data to operator station).  
-- Add UDP broadcast mode for multi-client monitoring.  
-- Explore higher-frequency or adaptive packet modes for high-precision arm control.  
-- Deploy to rover compute unit (Raspberry Pi 4 / Jetson Nano) and field-test serial response latency.
-
 ---
