@@ -131,7 +131,7 @@ Both files can be switched dynamically by starting the server with:
 
 ### Prerequisites
 - Fedora or Linux distribution with Go ≥ 1.22
-- DualShock 4 controller connected via USB
+- Connected and configured controller
 - (Optional) Arduino or compatible serial interface
 
 Install dependencies:
@@ -181,7 +181,7 @@ Connect your controller, then run:
 ```
 Example output:
 ```
-2025/10/30 21:43:42 Controller found: Sony DualShock 4
+2025/10/30 21:43:42 Controller found: Controller Name
 2025/10/30 21:43:42 Connected to server
 ```
 
