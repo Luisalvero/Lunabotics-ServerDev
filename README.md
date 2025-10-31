@@ -43,11 +43,11 @@ The system operates as a **client-server pair**:
 
 ```
 Lunabotics-ServerDev/
-├── client.go
-├── server.go
-├── mock_client.go
-├── test_byte_formatter.py
-├── byte_config.json
+├── client.go  (Josselin)
+├── server.go (Luis )
+├── mock_client.go (Josselin)
+├── test_byte_formatter.py (Luis)
+├── byte_config.json (Luis)
 ├── byte_config_8byte.json
 ├── config_example.json
 └── go.mod / go.sum
