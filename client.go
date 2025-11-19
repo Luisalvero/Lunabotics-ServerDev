@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -57,7 +58,7 @@ func readController(js joystick.Joystick, conn net.Conn) error {
 	ticker := time.NewTicker(time.Second / SEND_RATE_HZ)
 	defer ticker.Stop()
 	
-	encoder := json.NewEncoder(conn)
+	// We'll manually marshal JSON and send framed packets: [4-byte big-endian length][payload][4-byte CRC]
 	state := &ControllerState{}
 	
 	for range ticker.C {
@@ -100,9 +101,28 @@ func readController(js joystick.Joystick, conn net.Conn) error {
 		
 		state.Timestamp = time.Now().UnixMilli()
 		
-		// Send JSON-encoded state
-		if err := encoder.Encode(state); err != nil {
-			return fmt.Errorf("sending state: %w", err)
+		// Marshal JSON without newline
+		b, err := json.Marshal(state)
+		if err != nil {
+			return fmt.Errorf("marshal state: %w", err)
+		}
+
+		if len(b) > MaxPacketSize {
+			// Skip sending if exceeding configured max
+			log.Printf("state too large (%d bytes), skipping send", len(b))
+			continue
+		}
+
+		pkt := AppendCRC(b)
+		totalLen := uint32(len(pkt))
+		hdr := make([]byte, 4)
+		binary.BigEndian.PutUint32(hdr, totalLen)
+
+		if _, err := conn.Write(hdr); err != nil {
+			return fmt.Errorf("write header: %w", err)
+		}
+		if _, err := conn.Write(pkt); err != nil {
+			return fmt.Errorf("write packet: %w", err)
 		}
 		
 		fmt.Println(state)

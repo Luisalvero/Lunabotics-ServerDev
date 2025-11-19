@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -58,8 +59,7 @@ func main() {
 	defer ticker.Stop()
 	start := time.Now()
 
-	enc := json.NewEncoder(conn) // newline-delimited JSON objects
-
+	// We'll encode JSON into a buffer, then send framed: [4-byte big-endian length][payload][4-byte CRC]
 	for range ticker.C {
 		elapsed := time.Since(start).Seconds()
 
@@ -93,8 +93,31 @@ func main() {
 			Timestamp: time.Now().UnixMilli(),
 		}
 
-		if err := enc.Encode(&state); err != nil {
-			fmt.Println("encode error:", err)
+		// Marshal JSON manually to get raw bytes without newline
+		b, err := json.Marshal(&state)
+		if err != nil {
+			fmt.Println("json marshal error:", err)
+			return
+		}
+
+		if len(b) > MaxPacketSize {
+			fmt.Println("packet too large, skipping")
+			continue
+		}
+
+		// append CRC and then write length prefix + payload+crc
+		pkt := AppendCRC(b)
+		// total length is payload+crc
+		totalLen := uint32(len(pkt))
+		hdr := make([]byte, 4)
+		binary.BigEndian.PutUint32(hdr, totalLen)
+
+		if _, err := conn.Write(hdr); err != nil {
+			fmt.Println("write header error:", err)
+			return
+		}
+		if _, err := conn.Write(pkt); err != nil {
+			fmt.Println("write packet error:", err)
 			return
 		}
 	}

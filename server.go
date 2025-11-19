@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -212,23 +213,55 @@ func handleClient(conn net.Conn, formatter *ByteFormatter) {
 		log.Println("Arduino connected")
 	}
 	
-	decoder := json.NewDecoder(conn)
 	lastPrint := time.Now()
-	
+
 	for {
-		var state ControllerState
-		if err := decoder.Decode(&state); err != nil {
+		// Read 4-byte length prefix
+		hdr := make([]byte, 4)
+		if _, err := io.ReadFull(conn, hdr); err != nil {
 			if err == io.EOF {
 				log.Printf("Client disconnected")
 				return
 			}
-			log.Printf("Decode error: %v", err)
+			log.Printf("Read header error: %v", err)
+			return
+		}
+		totalLen := binary.BigEndian.Uint32(hdr)
+		if totalLen == 0 {
+			log.Printf("Zero-length packet, skipping")
 			continue
 		}
-		
+		if totalLen > uint32(MaxPacketSize+4) { // payload + crc shouldn't exceed MaxPacketSize+4
+			log.Printf("Packet too large: %d bytes (max %d)", totalLen, MaxPacketSize+4)
+			// Drain and continue (attempt to read and discard)
+			if _, err := io.CopyN(io.Discard, conn, int64(totalLen)); err != nil {
+				log.Printf("drain error: %v", err)
+				return
+			}
+			continue
+		}
+
+		buf := make([]byte, totalLen)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			log.Printf("Read packet error: %v", err)
+			return
+		}
+
+		payload, ok := VerifyPacket(buf)
+		if !ok {
+			log.Printf("CRC mismatch from %s, dropping packet", conn.RemoteAddr())
+			continue
+		}
+
+		var state ControllerState
+		if err := json.Unmarshal(payload, &state); err != nil {
+			log.Printf("JSON unmarshal error: %v", err)
+			continue
+		}
+
 		// Format to Arduino bytes
 		data := formatter.Format(&state)
-		
+
 		// Debug print every second
 		if time.Since(lastPrint) > time.Second {
 			fmt.Printf("State: %v\n", &state)
@@ -240,7 +273,7 @@ func handleClient(conn net.Conn, formatter *ByteFormatter) {
 			fmt.Printf("]\n")
 			lastPrint = time.Now()
 		}
-		
+
 		// Send to Arduino
 		if arduino != nil {
 			if _, err := arduino.Write(data); err != nil {

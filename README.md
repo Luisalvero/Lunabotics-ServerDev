@@ -16,244 +16,92 @@ The system operates as a **client-server pair**:
 ### Components
 
 #### **Client (client.go)**
-- Reads controller input from `/dev/input/js0` using the `github.com/0xcafed00d/joystick` library.  
-- Normalizes raw axis and button values to an 8-bit (0–255) scale.  
-- Encodes controller state into JSON and sends it to the server at approximately **33 Hz** (SEND_RATE_HZ).  
-- Reconnects automatically if the server or controller disconnects.
+Lunabotics Controller — Quick Guide
 
-#### **Server (server.go)**
-- Listens for incoming TCP connections (default: `localhost:8080`).  
-- Parses the JSON-encoded controller states.  
-- Formats each state into an Arduino-compatible byte packet according to a **JSON configuration file** (`byte_config.json` or `byte_config_8byte.json`).  
-- Transmits packets through the serial interface (`/dev/ttyACM0`) to the rover’s Arduino or control board.  
-- If no serial device is connected, the system remains in debug mode and logs packets to the console.
+This README gives concise instructions for running the server and client, explains the CRC framing used on the wire, and documents the configurable ByteFormatter templates.
 
-#### **Mock Client (mock_client.go)**
-- Generates synthetic joystick data at the same 33 Hz rate.
-- Can send either **deterministic sine-wave test patterns** or **randomized input values** to emulate controller activity.
-- Allows testing of packet formatting and network performance without physical hardware.
+Server
+- Location: `server.go`.
+- Purpose: listen for controller packets, verify CRC, format bytes and send to serial Arduino.
+- Start (default port 8080):
 
-#### **Test Harness (test_byte_formatter.py)**
-- Python test script used to validate byte-format compatibility between the original Python `RoverState` and the new Go `ByteFormatter` implementation.
-- Ensures that identical inputs produce matching byte sequences for all supported configurations.
+  go run server.go crc.go
 
----
+- To select a different port:
 
-## Directory Layout
+  go run server.go crc.go -port 18080
 
-```
-Lunabotics-ServerDev/
-├── client.go  (Josselin)
-├── server.go (Luis )
-├── mock_client.go (Josselin)
-├── test_byte_formatter.py (Luis)
-├── byte_config.json (Luis)
-├── byte_config_8byte.json
-├── config_example.json
-└── go.mod / go.sum
-```
+- Behavior:
+  - Reads framed packets from TCP: 4-byte big-endian length N, then N bytes (payload + 4-byte CRC).
+  - Verifies CRC before decoding JSON payload. If CRC fails, packet is dropped and logged.
+  - Converts verified ControllerState JSON into Arduino bytes using `ByteFormatter` and writes to serial (`/dev/ttyACM0`) or logs in debug mode.
 
----
+Client
+- Location: `client.go` (real controller) and `mock_client.go` (simulated input).
+- Purpose: read controller or generate test data, send JSON payloads to server.
+- Sending format (on the wire):
+  1) 4-byte big-endian uint32 = length (payload + 4 CRC bytes)
+  2) payload bytes (JSON-marshalled ControllerState)
+  3) 4-byte big-endian CRC-32 (CRC computed over the payload only)
 
-## Configuration System
+- Example: if payload is 5 bytes, the wire will be: [00 00 00 09] [5 payload bytes] [4 CRC bytes].
+- Run mock client (local server):
 
-The byte-format layout is fully configurable via JSON.  
-Each element of the `"bytes"` array defines how one byte in the packet is constructed.
+  go run mock_client.go crc.go -server 127.0.0.1:8080
 
-### Example: 6-byte Python-compatible format
-```json
-{
-  "output_size": 6,
-  "bytes": [
-    {
-      "type": "bits",
-      "bits": [
-        {"pos": 0, "field": "W"},
-        {"pos": 1, "field": "E"},
-        {"pos": 2, "field": "S"}
-      ]
-    },
-    {"type": "field", "field": "LjoyX"},
-    {"type": "field", "field": "LjoyY"},
-    {"type": "field", "field": "RjoyY"},
-    {"type": "field", "field": "RT"},
-    {
-      "type": "bits",
-      "bits": [
-        {"pos": 5, "field": "LB"},
-        {"pos": 6, "field": "RB"},
-        {"pos": 7, "field": "N"}
-      ]
-    }
-  ]
-}
-```
+CRC support (crc.go)
+- File: `crc.go`.
+- Algorithm: CRC-32 using polynomial 0x04C11DB7 (IEEE / CCITT-32). Implemented using `crc32.ChecksumIEEE`.
+- API:
+  - `var MaxPacketSize` — maximum payload size in bytes (default 8192). Adjust as needed.
+  - `ComputeCRC([]byte) uint32` — compute CRC for a payload.
+  - `AppendCRC([]byte) []byte` — returns payload with 4 CRC bytes appended (big-endian).
+  - `VerifyPacket([]byte) (payload []byte, ok bool)` — given payload+crc, returns payload and whether CRC matched.
 
-### Example: Extended 8-byte format
-```json
-{
-  "output_size": 8,
-  "bytes": [
-    {"type": "const", "value": 255},
-    {
-      "type": "bits",
-      "bits": [
-        {"pos": 0, "field": "N"},
-        {"pos": 1, "field": "E"},
-        {"pos": 2, "field": "S"},
-        {"pos": 3, "field": "W"},
-        {"pos": 4, "field": "LB"},
-        {"pos": 5, "field": "RB"},
-        {"pos": 6, "field": "SELECT"},
-        {"pos": 7, "field": "START"}
-      ]
-    },
-    {"type": "field", "field": "LjoyX"},
-    {"type": "field", "field": "LjoyY"},
-    {"type": "field", "field": "RjoyX"},
-    {"type": "field", "field": "RjoyY"},
-    {"type": "field", "field": "RT"},
-    {"type": "const", "value": 255}
-  ]
-}
-```
+ByteFormatter templates (configurable JSON)
+- The server converts JSON ControllerState into a fixed-length byte array for Arduino using `ByteFormatter` and a `ByteConfig`.
+- Config structure (high level):
+  - `output_size` (int): total bytes in the formatted packet.
+  - `bytes` (array): list of per-byte mappings. Each entry maps one output byte and has a `type` field.
 
-Both files can be switched dynamically by starting the server with:
-```bash
-./lunabotics-server -config byte_config.json
-# or
-./lunabotics-server -config byte_config_8byte.json
-```
+Supported byte mapping types
+1) `const`
+   - Fields: `value` (0-255)
+   - Behavior: the output byte is the constant value.
+   - Use when a fixed marker or start/end sentinel is required.
 
----
+2) `field`
+   - Fields: `field` (string, name of ControllerState field)
+   - Behavior: output byte = value of the named field (uint8 fields are used directly).
+   - Example: `{"type":"field","field":"LjoyX"}`
 
-## Build Instructions
+3) `bits`
+   - Fields: `bits` (array of `{pos, field}`)
+   - Behavior: construct an output byte by setting bits at positions `pos` when the corresponding ControllerState `field` is non-zero.
+   - Useful for packing booleans into a single byte (buttons).
+   - Example:
+     {
+       "type": "bits",
+       "bits": [ {"pos":0, "field":"W"}, {"pos":1, "field":"E"} ]
+     }
 
-### Prerequisites
-- Fedora or Linux distribution with Go ≥ 1.22
-- Connected and configured controller
-- (Optional) Arduino or compatible serial interface
+Default templates included
+- `byte_config.json` — a 6-byte Python-compatible format (start byte, 4 payload bytes, end byte).
+- `byte_config_8byte.json` — an 8-byte extended format (start/end constants, packed bits, and fields).
 
-Install dependencies:
-```bash
-sudo dnf install golang joystick -y
-go mod tidy
-```
+Switching templates
+- Start server with `-config <file>` to load a different byte mapping config:
 
-### Build
-```bash
-go build -o lunabotics-server server.go
-go build -o lunabotics-client client.go
-```
+  go run server.go crc.go -config byte_config_8byte.json
 
-Optional build script:
-```bash
-chmod +x build.sh
-./build.sh
-```
+Notes & troubleshooting
+- Multi-binary layout: `client.go` and `mock_client.go` are both `package main` with `main()` in the same directory. Build them separately (or move each into `cmd/<name>/` for cleaner multi-target builds).
+- If `go run server.go` fails with port in use, pick another port: `-port 18080`.
+- `MaxPacketSize` guards the server from very large or malicious packet lengths; increase if you must support larger payloads, but keep memory/time constraints in mind.
 
----
+Quick example: what the server receives and validates
+- Client sends JSON payload (e.g. `{"N":1,...}`) → client marshals to bytes `P`.
+- Client computes CRC = CRC32(P), appends as 4 big-endian bytes → packet = P || CRC
+- Client prefixes total length N = len(packet) as 4-byte big-endian header and sends: [len][packet]
+- Server reads [len], reads packet, splits last 4 bytes as CRC, recomputes CRC over payload, compares; if equal, processes payload.
 
-## Operation
-
-### 1. Start the Server
-```bash
-./lunabotics-server -config byte_config.json
-```
-Example output:
-```
-2025/10/30 21:43:23 Loaded config: 6 bytes output
-2025/10/30 21:43:23 Server listening on localhost:8080
-```
-
-If the Arduino is not connected:
-```
-Arduino not connected: no such file or directory (debug mode)
-```
-Packets will still be printed for validation.
-
----
-
-### 2. Start the Client
-Connect your controller, then run:
-```bash
-./lunabotics-client
-```
-Example output:
-```
-2025/10/30 21:43:42 Controller found: Controller Name
-2025/10/30 21:43:42 Connected to server
-```
-
-Move the joysticks and observe the live packet output on the server:
-```
-Arduino bytes: [A8 97 FC 67 E9 95]
-```
-
----
-
-## Testing Without Hardware
-
-To validate system performance or packet encoding without a controller:
-```bash
-go run mock_client.go
-# or with randomized test data
-go run mock_client.go -random
-```
-
-Expected server output:
-```
-State: &{1 1 0 0 0 0 0 0 0 0 152 252 0 102 0 233 0 0 1761875025920}
-Arduino bytes: [AA 98 FC 66 E9 95]
-```
-
----
-
-## Packet Verification (Python Test Harness)
-
-To confirm Go and Python parity:
-```bash
-python3 test_byte_formatter.py --config byte_config.json
-```
-This runs a suite of reference tests to ensure identical output to the original `RoverState` logic.
-
-Example:
-```
-Test 1:
-  Go formatted   : ['0xA8', '0x7F', '0x7F', '0x7F', '0x00', '0x15']
-  Python expected: ['0xA8', '0x7F', '0x7F', '0x7F', '0x00', '0x15']
-All tests passed!
-```
-
----
-
-## Hardware Integration Notes
-
-- The default serial target (`/dev/ttyACM0`, 9600 baud) corresponds to the Arduino used in the rover’s control module.
-- The Go server can be reconfigured to write to any device by modifying `ARDUINO_PORT` in `server.go`.
-- During lab or field operations, the system can run entirely over Ethernet or a Wi-Fi tether between the control station and rover compute unit.
-- The modular configuration allows adaptation to new communication boards or higher-resolution control systems without code changes.
-
----
-
-## Safety and Performance
-
-- The system runs at **33 Hz** to ensure smooth rover response while minimizing network congestion.  
-- Each JSON packet is lightweight (< 250 bytes).  
-- Serial transmission uses buffered writes with timeout protection.  
-- In case of link loss, the rover’s microcontroller can implement a safety timeout on command receipt to halt motion.
-
----
-
-## Summary
-
-| Component | Description | Language | Frequency |
-|------------|--------------|-----------|------------|
-| `lunabotics-client` | Reads and sends joystick data | Go | 33 Hz |
-| `lunabotics-server` | Formats data and sends to Arduino | Go | 33 Hz |
-| `mock_client` | Simulated input generator | Go | 33 Hz |
-| `test_byte_formatter.py` | Validation against Python reference | Python | On demand |
-
----
-
----
