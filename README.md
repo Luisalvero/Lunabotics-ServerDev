@@ -1,6 +1,6 @@
 # Lunabotics-ServerDev  
 High-Performance Telemetry & Control Server for FIU Lunabotics  
-Author: **Luis Alvero**  
+Author: **Luis Alvero** **Josselin Gallardo**
 Status: Actively Developed  
 Languages: **Go**, **Python (prototyping)**  
 Subsystems: Telemetry, Command Routing, Data Serialization, Microcontroller Packet Protocols
